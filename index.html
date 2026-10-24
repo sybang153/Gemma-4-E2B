@@ -1,0 +1,541 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Gemma 4 E2B 활성화 뷰어</title>
+<style>
+:root{--bg:#f6f6f3;--panel:#fff;--line:#e2e2dd;--text:#1c1c1a;--muted:#6c6c66;--accent:#2f6fdf;--sel:#e8f0ff;--tap:#fff4d6;--bd:rgba(0,0,0,.22);--res:#8f8f88}
+@media (prefers-color-scheme:dark){:root{--bg:#131313;--panel:#1b1b1b;--line:#2d2d2d;--text:#e7e7e4;--muted:#9a9a94;--accent:#73a3ff;--sel:#1e2940;--tap:#3a3220;--bd:rgba(255,255,255,.2);--res:#77776f}}
+*{box-sizing:border-box}
+body{margin:0;height:100vh;display:flex;flex-direction:column;background:var(--bg);color:var(--text);font:13px/1.45 system-ui,"Segoe UI","Malgun Gothic",sans-serif}
+header{padding:9px 16px;border-bottom:1px solid var(--line);display:flex;gap:14px;align-items:baseline;flex-wrap:wrap}
+header h1{font-size:15px;margin:0}
+.chip{color:var(--muted);font-variant-numeric:tabular-nums}
+main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1.25fr) minmax(0,.9fr)}
+section{min-height:0;overflow:hidden;padding:10px 16px;border-right:1px solid var(--line);display:flex;flex-direction:column}
+section:last-child{border-right:0}
+h2{font-size:13px;margin:0 0 6px}
+.scroll{flex:1;min-height:0;overflow:auto;scrollbar-gutter:stable}  /* a scrollbar appearing must not narrow the content */
+#ov{flex:1;min-height:0;display:grid;grid-auto-rows:minmax(11px,1fr);overflow:auto;scrollbar-width:none}  /* all rows share the column height */
+.row{display:grid;grid-template-columns:40px 88px 1fr 36px 40px;gap:6px;align-items:center;padding:0 4px;border-radius:4px;cursor:pointer;font-size:11px;line-height:1}
+.row:hover{background:var(--sel)}.row.on{background:var(--sel);outline:1px solid var(--accent)}
+.row.stage{grid-template-columns:40px 1fr;color:var(--muted)}
+.lbl{font-variant-numeric:tabular-nums;font-weight:600}
+.badge{color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row canvas{width:100%;height:max(6px,60%);image-rendering:pixelated;display:block}
+.bar{height:5px;background:var(--line);border-radius:3px;overflow:hidden}.bar i{display:block;height:100%;width:0;background:var(--accent)}
+.legend{display:grid;grid-template-columns:40px 88px 1fr 36px 40px;gap:6px;padding:0 4px 4px;color:var(--muted);font-size:11px;white-space:nowrap}
+.cap{color:var(--muted);margin:8px 0 3px;display:flex;flex-wrap:wrap;column-gap:10px}
+.cap .v{margin-left:auto;white-space:nowrap;font-variant-numeric:tabular-nums}  /* value wraps below the label as a whole */
+/* block diagram, read top -> bottom; every module shows its own live output */
+.dg,.layer{display:flex;flex-direction:column;gap:4px}
+.dg{font-size:10px;line-height:1.15;padding:0 0 4px}
+.m{position:relative;display:flex;align-items:center;justify-content:space-between;gap:4px;height:14px;padding:0 1px;border:1px solid var(--bd);border-radius:4px;background:var(--panel);min-width:0;overflow:hidden}
+.m.r8{height:18px}.m.rN{height:24px}  /* per-head and wide-MLP modules get room for their rows */
+.m canvas{position:absolute;inset:0;width:100%;height:100%;image-rendering:pixelated;display:block}  /* the activation fills the whole box */
+.m .ml,.m .mv{position:relative;padding:0 3px;line-height:11px;white-space:nowrap;color:var(--text);font-weight:600;  /* text sits on the activation */
+  -webkit-text-stroke:1.6px var(--panel);paint-order:stroke fill}  /* vector outline drawn under the glyph: crisp, ~0.8px visible */
+.m .ml{overflow:hidden;text-overflow:ellipsis;min-width:0}
+.m .mv{flex:none;width:5.8em;text-align:right;overflow:hidden;font-size:9px;font-variant-numeric:tabular-nums}  /* fixed width: changing digits must not move anything */
+.m .mv:empty{visibility:hidden}
+.m i{font-style:normal;color:var(--muted)}
+.m.res{border-style:dashed}  /* a point on the residual stream */
+.m[data-k]{cursor:zoom-in}
+/* enlarged view of one module */
+#zoom{position:fixed;inset:0;right:var(--chat-w,0px);z-index:10;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45)}
+#zoom[hidden]{display:none}
+.zp{width:min(920px,calc(100% - 24px));max-height:90vh;overflow:auto;padding:12px 14px;background:var(--panel);border:1px solid var(--bd);border-radius:10px}
+.zh{display:flex;gap:10px;align-items:center}.zh button{margin-left:auto;padding:2px 10px}
+#zc{width:100%;image-rendering:pixelated;display:block;margin:8px 0 6px;border:1px solid var(--line);cursor:crosshair}
+#zc.nz{border:2px solid var(--accent)}  /* cells open the neuron view */
+#zm,#zr{font-variant-numeric:tabular-nums;min-height:1.4em}
+/* single-neuron interpretation */
+:root{--pos:#0f8587;--neg:#b5562b}
+@media (prefers-color-scheme:dark){:root{--pos:#3fb8ba;--neg:#e0845a}}
+#neuron{position:fixed;inset:0;right:var(--chat-w,0px);z-index:11;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45)}
+#neuron[hidden]{display:none}
+.np{width:min(1000px,calc(100% - 24px))}.np h3{font-size:12px;margin:12px 0 4px}.np h3 .w{font-weight:400}
+.np input{width:64px;font:inherit;padding:2px 4px;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:4px}
+.np select{font:inherit;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:4px}
+.ncols{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media (max-width:700px){.ncols{grid-template-columns:1fr}}
+.ex{display:grid;grid-template-columns:74px 1fr;gap:6px;align-items:start;font-size:11px;padding:2px 0;border-bottom:1px solid var(--line)}
+.bv{position:relative;display:block;height:15px;font-variant-numeric:tabular-nums}
+.bv i{position:absolute;left:0;top:2px;bottom:2px;opacity:.35;border-radius:2px}.bv b{position:relative;font-weight:500;padding-left:3px}
+i.pos,mark.pos{background:var(--pos)}i.neg,mark.neg{background:var(--neg)}
+mark{color:#fff;border-radius:2px;padding:0 1px}
+.ctx{white-space:pre-wrap;word-break:break-word}
+.ctx .dt{display:block;font-size:10px;color:var(--muted);text-decoration:none}.ctx .dt:hover{text-decoration:underline}
+.tk{display:inline-block;margin:0 4px 4px 0;font-size:11px;padding:0 4px;border-radius:3px;border:1px solid var(--line)}
+.tk.pos{border-color:var(--pos)}.tk.neg{border-color:var(--neg)}
+.nctl{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.gen{white-space:pre-wrap;font-size:12px;border:1px solid var(--line);border-radius:6px;padding:6px 8px;min-height:3em}
+.m.s{display:block;height:16px;line-height:14px;text-align:center;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}  /* nothing to measure; fixed height so emoji tokens cannot grow it */
+.hz{display:flex;gap:5px}.hz>.m{flex:1 1 0;height:auto;min-height:22px}.hz>.m.rN{min-height:26px}
+/* narrow modules wrap their (fixed per layer) labels instead of cutting them */
+.hz>.m .ml{white-space:normal;word-break:keep-all;text-overflow:clip;padding:1px 3px}
+.hz>.m.wide{flex-grow:2;height:auto;min-height:16px;white-space:normal}
+.grp{display:flex;flex-direction:column;gap:2px}  /* parallel modules stacked full width, no arrows between them */
+/* downward arrow into every element after the first; every container keeps its content centred so arrows line up */
+.dg>*+*::before,.layer>*+*::before,.blk>*+*::before{content:"";position:absolute;left:50%;top:-4px;margin-left:-3px;border:3px solid transparent;border-top:4px solid var(--muted);border-bottom:0}
+.dg>*,.layer>*,.blk>*{position:relative}
+.gap{color:var(--muted);text-align:center;font-size:9px;line-height:1;padding-top:1px}
+.layer{padding:3px 24px 4px;border:1.5px solid var(--bd);border-radius:8px}  /* equal side padding: the right one holds the residual lines */
+.layer>.title{font-weight:600}.layer>.title+*::before{display:none}
+/* sublayer block (attention / MLP / PLE): named frame; its residual add sits outside it */
+.blk{display:flex;flex-direction:column;gap:4px;padding:8px 5px 5px;border:1px solid var(--bd);border-radius:6px;background:rgba(127,127,127,.07)}
+.blk>.bt{position:absolute;top:-6px;left:8px;padding:0 4px;font-size:9px;line-height:11px;font-weight:600;color:var(--muted);background:var(--bg)}
+.blk>.bt+*::before{display:none}
+.layer>.skip::before{display:none}
+.layer>.skip{position:absolute;right:11px;width:13px;border:2px solid var(--res);border-left:0;border-radius:0 7px 7px 0;pointer-events:none}  /* residual connection; its vertical runs mid-gutter */
+.skip::after{content:"";position:absolute;left:-5px;bottom:-5px;border:4px solid transparent;border-right:5px solid var(--res);border-left:0}
+.top5{display:inline-flex;gap:3px;vertical-align:middle}  /* one line whatever the tokens: a wrap would move the whole diagram */
+.top5 span{font-size:9px;line-height:11px;height:13px;overflow:hidden;border:1px solid var(--line);border-radius:3px;padding:0 3px;white-space:nowrap}
+table{border-collapse:collapse;width:100%;font-size:11px;table-layout:fixed}
+td,th{border-bottom:1px solid var(--line);padding:3px 5px;text-align:left;vertical-align:top;overflow-wrap:anywhere}
+.tag{color:var(--accent);font-size:10px}
+th{color:var(--muted);font-weight:500;position:sticky;top:0;background:var(--bg)}
+.nw{white-space:nowrap}
+tr.tap{background:var(--tap)}
+.w{color:var(--muted);font-size:11px}
+code{font:11px ui-monospace,Consolas,monospace}
+#msgs{flex:1;overflow:auto;min-height:0}
+.msg{margin:0 0 10px;white-space:pre-wrap;word-break:break-word}
+.msg b{display:block;font-size:11px;color:var(--muted);margin-bottom:2px}
+#cand{border-top:1px solid var(--line);padding:8px 0;min-height:120px}
+#cand>.w{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#speed{min-width:9ch}  /* reserve the width before the first token arrives */
+.cr{display:grid;grid-template-columns:110px 1fr 46px;gap:6px;align-items:center;font-size:12px}
+.cr code{overflow:hidden;white-space:pre;text-overflow:ellipsis}
+form{display:flex;flex-direction:column;gap:6px;border-top:1px solid var(--line);padding-top:8px}
+textarea{width:100%;height:64px;resize:vertical;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px;font:inherit}
+.btns{display:flex;gap:6px}
+button{font:inherit;padding:5px 12px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--text);cursor:pointer}
+button.pri{background:var(--accent);border-color:var(--accent);color:#fff}
+button:disabled{opacity:.45;cursor:default}
+details{margin-top:12px}summary{cursor:pointer;color:var(--muted)}
+@media (max-width:900px){body{height:auto}main{grid-template-columns:1fr}section{border-right:0;border-bottom:1px solid var(--line)}#ov{grid-auto-rows:20px}.scroll{max-height:70vh}#msgs{min-height:30vh;max-height:50vh}}
+</style>
+</head>
+<body>
+<header><h1>Gemma 4 E2B · GGUF Q4_0</h1><span id="sum" class="chip">모델 불러오는 중…</span><span id="corpus" class="chip"></span><span id="speed" class="chip"></span></header>
+<main>
+<section>
+  <h2>전체 구조</h2>
+  <div class="legend"><span>층</span><span>어텐션</span><span>MLP 뉴런</span><span>헤드</span><span>잔차</span></div>
+  <div id="ov"></div>
+</section>
+<section id="detail"></section>
+<section>
+  <h2>대화</h2>
+  <div id="msgs"></div>
+  <div id="cand"><div class="w">다음 토큰 후보가 여기에 표시됩니다.</div></div>
+  <form id="f">
+    <textarea id="inp" placeholder="메시지 입력 (Enter 전송, Shift+Enter 줄바꿈)"></textarea>
+    <div class="btns"><button class="pri" id="send">보내기</button><button type="button" id="stop" disabled>중지</button><button type="button" id="clear">새 대화</button></div>
+  </form>
+</section>
+</main>
+<div id="zoom" hidden><div class="zp">
+  <div class="zh"><b id="zt"></b><button type="button" id="zx">닫기 ✕</button></div>
+  <div id="zm" class="w"></div>
+  <canvas id="zc"></canvas>
+  <div id="zr" class="w"></div>
+</div></div>
+<div id="neuron" hidden><div class="zp np">
+  <div class="zh"><b id="nt"></b>
+    <select id="nkind"><option value="mlp">MLP</option><option value="ple">PLE</option></select>
+    <span class="w">층</span><input id="nl" type="number" min="0"><span class="w">뉴런 #</span><input id="ni" type="number" min="0">
+    <button type="button" id="ngo">해석</button><button type="button" id="nx">닫기 ✕</button></div>
+  <div id="ns" class="w"></div>
+  <div class="ncols">
+    <div><h3>+ 양극 최강 발화 <span class="w">· 표시된 토큰에서 발화, 같은 문서 안 앞 12·뒤 3 토큰 문맥</span></h3><div id="npos"></div></div>
+    <div><h3>− 양극 최강 발화 <span class="w">· 가장 음수로 발화한 토큰</span></h3><div id="nneg"></div></div>
+  </div>
+  <div class="ncols">
+    <div><h3>밀어 올리는 토큰 <span class="w">· 출력 가중치 → 최종 norm → 출력층 직접 투영</span></h3><div id="nup"></div></div>
+    <div><h3>밀어 내리는 토큰 <span class="w">· 이후 층과 정규화 크기는 무시한 근사</span></h3><div id="ndown"></div></div>
+  </div>
+  <h3>제거 · 조향 <span class="w">· 모든 위치에서 이 뉴런 값을 바꿔 다시 계산 (세션 상태는 그대로)</span></h3>
+  <div class="nctl">
+    <select id="nmode"><option value="zero">끄기 (0으로)</option><option value="add">조향: 활성 + k × 말뭉치 최대 |a|</option></select>
+    <span class="w">k</span><input id="nk" type="number" value="4" step="1">
+    <button type="button" id="nprobe">마지막 토큰의 다음 토큰 확률 비교</button>
+    <button type="button" id="nsteer">마지막 답변 다시 생성 비교</button>
+  </div>
+  <div id="nres"></div>
+</div></div>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const shape = a => a.join(' × ');
+let S = null, F = null, raw = null, dirty = false, sel = 'model', busy = false;  // raw: latest frame, decoded lazily in draw()
+let history = [], cur = null, nTok = 0, t0 = 0, inTok = null;  // inTok: token fed into the decode that produced raw
+let indexing = true;  // the server indexes the neuron corpus once; chat waits for it
+const pad = n => String(n).padStart(2, '0');
+
+// viridis-like LUT for activation magnitude (0..255)
+const STOPS = [[68,1,84],[59,82,139],[33,145,140],[94,201,98],[253,231,37]];
+const LUT = Array.from({length:256}, (_, i) => {
+  const x = i / 255 * (STOPS.length - 1), k = Math.min(Math.floor(x), STOPS.length - 2), f = x - k;
+  return STOPS[k].map((c, j) => Math.round(c + (STOPS[k + 1][j] - c) * f));
+});
+const SQRT = Array.from({length:256}, (_, i) => LUT[Math.round(Math.sqrt(i / 255) * 255)]);  // sqrt scale keeps weak units visible next to outliers
+const b64 = s => { const b = atob(s), u = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return u; };
+
+function paint(cv, vals, w, h) {  // vals: Uint8Array of length w*h
+  cv.width = w; cv.height = h;
+  const ctx = cv.getContext('2d'), img = ctx.createImageData(w, h);
+  for (let i = 0; i < w * h; i++) { const c = SQRT[vals[i] ?? 0]; img.data.set(c, i * 4); img.data[i * 4 + 3] = vals[i] === undefined ? 0 : 255; }
+  ctx.putImageData(img, 0, 0);
+}
+function binMax(q, w) {  // downsample to w bins, keeping the strongest neuron per bin
+  const out = new Uint8Array(w), n = q.length;
+  for (let i = 0; i < n; i++) { const b = Math.floor(i * w / n); if (q[i] > out[b]) out[b] = q[i]; }
+  return out;
+}
+
+const ws = new WebSocket(`ws://${location.host}/ws`);
+ws.onclose = () => { $('#sum').textContent = '서버 연결 끊김'; };
+ws.onmessage = e => {
+  const m = JSON.parse(e.data);
+  if (m.type === 'structure') { S = m; buildHeader(); buildOverview(); select(0); }
+  else if (m.type === 'tok') {
+    if (!cur.text && !nTok) t0 = performance.now();
+    nTok++; cur.text += m.text; cur.el.textContent = cur.text; $('#msgs').scrollTop = 1e9;
+    raw = m.frame; inTok = m.input; dirty = true; showCand(m.frame.top, m.piece);
+    if (nTok > 1) $('#speed').textContent = `${((nTok - 1) * 1000 / (performance.now() - t0)).toFixed(1)} tok/s`;
+  }
+  else if (m.type === 'frame') { raw = m.frame; inTok = m.input; dirty = true; }  // last shown token recomputed for a new layer
+  else if (m.type === 'corpus') showCorpus(m);
+  else if (m.type === 'neuron') showNeuron(m);
+  else if (m.type === 'nprobe') showProbe(m);
+  else if (m.type === 'nsteer') showSteer(m);
+  else if (m.type === 'nerror') $('#nres').innerHTML = `<div class="w">오류: ${esc(m.message)}</div>`;
+  else if (m.type === 'done') { history.push({role: 'assistant', content: cur.text}); setBusy(false); }
+  else if (m.type === 'error') { (cur ? cur.el : $('#msgs')).insertAdjacentHTML('beforeend', `<div class="w">오류: ${esc(m.message)}</div>`); setBusy(false); }
+};
+
+function decodeFrame(f) {
+  const vec = v => v && {q: b64(v.q), n: v.n, s: v.s};
+  return {
+    mlp: f.mlp.map(l => l && {q: b64(l.q), s: l.s, m: l.m, n: l.n}),
+    attn: f.attn,
+    resid: f.resid.map(vec),
+    emb: vec(f.emb), final: vec(f.final),
+    detail: {layer: f.detail.layer, v: Object.fromEntries(Object.entries(f.detail.v).map(([k, v]) => [k, vec(v)]))},
+  };
+}
+
+function buildHeader() {
+  const m = S.summary;
+  $('#sum').textContent = `${m.arch} · 층 ${m.n_layer} · d_model ${m.n_embd} · 헤드 ${m.n_head}/${m.n_head_kv}(KV) · 파라미터 ${(m.n_params / 1e9).toFixed(2)}B · 파일 ${(m.file_bytes / 2**30).toFixed(2)} GiB · 그래프 노드 ${m.n_nodes}`;
+}
+
+function buildOverview() {
+  const rows = [`<div class="row stage" data-s="model"><span class="lbl">모델</span><span>메타데이터 · 파일 텐서 전체 목록</span></div>`];
+  for (const st of S.stages) {
+    if (st.id === 'in' || st.id === 'out') {
+      rows.push(`<div class="row stage" data-s="${st.id}"><span class="lbl">${st.id === 'in' ? '입력' : '출력'}</span><span>${esc(st.title)}</span></div>`);
+      continue;
+    }
+    const L = S.layers[st.id];
+    rows.push(`<div class="row" data-s="${st.id}"><span class="lbl">L${String(st.id).padStart(2, '0')}</span>` +
+      `<span class="badge">${L.attn.split(' ')[0]}${L.kv_shared ? ` · KV←${L.kv_from}` : ''}</span>` +
+      `<canvas class="strip" width="128" height="1"></canvas><canvas class="heads" width="${L.n_head}" height="1"></canvas>` +
+      `<span class="bar"><i></i></span></div>`);
+  }
+  $('#ov').innerHTML = rows.join('');
+  $('#ov').onclick = e => { const r = e.target.closest('.row'); if (r) select(r.dataset.s); };
+}
+
+function select(s) {
+  sel = s;
+  ws.send(JSON.stringify({type: 'select', layer: S.layers[s] ? Number(s) : -1}));  // server captures this layer's modules
+  document.querySelectorAll('#ov .row').forEach(r => r.classList.toggle('on', r.dataset.s === String(s)));
+  const d = $('#detail');
+  if (s === 'model') {
+    const meta = Object.entries(S.meta).map(([k, v]) => `<tr><td><code>${esc(k)}</code></td><td>${esc(v)}</td></tr>`).join('');
+    const tens = S.tensors.map(t => `<tr${t.used ? '' : ' style="opacity:.55"'}><td><code>${esc(t.name)}</code></td><td class="nw">${shape(t.shape)}</td><td class="nw">${t.type}</td><td class="nw">${(t.bytes / 2**20).toFixed(2)}</td><td class="nw">${t.used ? '사용' : '미사용'}</td></tr>`).join('');
+    const nUsed = S.tensors.filter(t => t.used).length;
+    d.innerHTML = `<h2>모델 전체</h2><div class="scroll">
+      <div class="cap"><span>양자화 타입별 텐서</span></div><div>${Object.entries(S.summary.types).map(([k, v]) => `${k}: ${v.n}개 (${(v.bytes / 2**20).toFixed(0)} MiB)`).join(' · ')}</div>
+      <details open><summary>파일 텐서 ${S.tensors.length}개 · 그래프에서 사용 ${nUsed}개</summary>
+      <table><colgroup><col><col style="width:92px"><col style="width:46px"><col style="width:58px"><col style="width:44px"></colgroup>
+      <tr><th>이름</th><th>모양</th><th>타입</th><th>MiB</th><th>그래프</th></tr>${tens}</table></details>
+      <details><summary>GGUF 메타데이터 ${Object.keys(S.meta).length}개</summary><table><colgroup><col style="width:42%"><col></colgroup>${meta}</table></details></div>`;
+    return;
+  }
+  const st = S.stages.find(x => String(x.id) === String(s)), L = S.layers[s];
+  const ops = st.ops.map((o, i) => `<tr class="${o.tap ? 'tap' : ''}"><td>${i + 1}</td>` +
+    `<td><code>${esc(o.op)}</code><div class="w"><code>${esc(o.name)}</code></div>${o.tap ? `<div class="tag">${{mlp: 'MLP 뉴런 = 이 연산의 입력', attn: '헤드 출력 = 이 연산의 입력', resid: '잔차 스트림 = 이 출력'}[o.tap]}</div>` : ''}</td>` +
+    `<td>${shape(o.shape)}</td>` +
+    `<td>${o.inputs.map(w => `<div><code>${esc(w.name)}</code>${w.leaf ? ` <span class="w">${shape(w.shape)} · ${w.type}</span>` : ''}</div>`).join('')}</td></tr>`).join('');
+  const table = `<table><colgroup><col style="width:24px"><col style="width:36%"><col style="width:64px"><col></colgroup>
+    <tr><th>#</th><th>연산 · 출력 텐서</th><th>모양</th><th>입력 (가중치·캐시는 모양·타입)</th></tr>${ops}</table>`;
+  const title = `실행 순서대로의 연산 ${st.ops.length}개 (레이아웃 연산 ${st.n_layout_ops}개 생략)`;
+  d.innerHTML = L
+    ? `<h2>구조도 · L${pad(s)} <span class="w">(층은 왼쪽 목록에서 선택)</span></h2>
+       <div class="scroll">${diagram(Number(s), st, L)}<details><summary>${title}</summary>${table}</details></div>`
+    : `<h2>${esc(st.title)}</h2><div class="cap"><span>${title}</span></div><div class="scroll">${table}</div>`;
+  if (L) { layoutDiagram(); $('#detail details').ontoggle = layoutDiagram; }
+  dirty = true;
+}
+
+// The whole model top -> bottom with the selected layer expanded; every module shows its own live output.
+function diagram(l, st, L) {
+  const w = n => st.ops.flatMap(o => o.inputs).find(x => x.leaf && x.name === `blk.${l}.${n}.weight`);
+  const dims = n => { const x = w(n); return `<i title="${x.name} · ${x.type}">${x.shape[0]}→${x.shape[1]}</i>`; };
+  // rows > 1: one canvas row per head, or per 256 neurons
+  const mod = (key, label, rows = 1, cls = '') => `<div class="m ${cls} ${rows === 1 ? '' : rows <= 8 ? 'r8' : 'rN'}" data-k="${key}" data-rows="${rows}">` +
+    `<canvas></canvas><span class="ml" title="${label.replace(/<[^>]+>/g, '')}">${label}</span><span class="mv"></span></div>`;
+  const fixed = (label, cls = '') => `<div class="m s ${cls}">${label}</div>`;  // nothing measured here
+  const side = (...ms) => `<div class="hz">${ms.join('')}</div>`;
+  const grp = (...ms) => `<div class="grp">${ms.join('')}</div>`;
+  const blk = (title, ...ms) => `<div class="blk"><span class="bt">${title}</span>${ms.join('')}</div>`;
+  const last = S.layers.length - 1, hd = w('attn_q').shape[1] / L.n_head, ff = L.n_ff / 256;
+  const emb = S.tensors.find(t => t.name === 'token_embd.weight');
+  const kv = L.kv_shared ? [fixed(`K · V ← L${pad(L.kv_from)}의 캐시 재사용`)]
+                         : [mod('Kcur_pos', `K ${dims('attn_k')} → norm → RoPE`), mod('Vcur_normed', `V ${dims('attn_v')} → norm`)];
+  return `<div class="dg">
+    ${side(fixed(`입력 토큰 <code id="dgIn">–</code>`), mod('emb', `임베딩 × √${S.summary.n_embd} <i>${emb.shape[1]} × ${emb.shape[0]}</i>`))}
+    ${l ? `<div class="gap">L00–L${pad(l - 1)} (${l}개 층)</div>` : ''}
+    <div class="layer">
+      <div class="title">디코더 층 L${pad(l)} · ${S.layers.length}개 중 ${l + 1}번째 · 오른쪽 선 = 잔차 연결</div>
+      ${mod('hin', l ? `잔차 입력 h${pad(l - 1)}` : '잔차 입력 = 임베딩', 1, 'res')}
+      ${blk('어텐션 블록',
+            mod('attn_norm', 'RMSNorm'),
+            grp(mod('Qcur_pos', `Q ${dims('attn_q')} → norm → RoPE`, L.n_head), ...kv),
+            mod('heads', `어텐션 · ${L.attn === 'global' ? '전역' : `슬라이딩 창 ${L.attn.split(' ')[1]}`} · 헤드 ${L.n_head} × ${hd}`, L.n_head),
+            mod('o_proj', `O 투영 ${dims('attn_output')}`),
+            mod('attn_post_norm', 'RMSNorm'))}
+      ${mod('attn_out', '⊕ 잔차 + 어텐션', 1, 'res')}
+      ${blk('MLP 블록 (GEGLU)',
+            mod('ffn_norm', 'RMSNorm'),
+            side(mod('ffn_gate', `gate ${dims('ffn_gate')}`, ff), mod('ffn_up', `up ${dims('ffn_up')}`, ff)),
+            mod('geglu', `GELU(gate) × up · 뉴런 ${L.n_ff}`, ff),
+            mod('ffn_out', `down ${dims('ffn_down')}`),
+            mod('ffn_post_norm', 'RMSNorm'))}
+      ${mod('pe_in', '⊕ 잔차 + MLP', 1, 'res')}
+      ${blk('PLE 블록 (층별 임베딩)',
+            side(mod('ple_gelu', `GELU(inp_gate ${dims('inp_gate')})`), mod('ple_in', `층별 임베딩 PLE[L${pad(l)}]`)),
+            mod('ple_mul', '⊙ 곱'),
+            mod('ple_proj', `proj ${dims('proj')}`),
+            mod('per_layer_embd_out', 'RMSNorm'))}
+      ${mod('resid_ple', '⊕ 잔차 + PLE', 1, 'res')}
+      ${mod('l_out', `× layer_scale = 출력 h${pad(l)}`, 1, 'res')}
+    </div>
+    ${l < last ? `<div class="gap">L${pad(l + 1)}–L${last} (${last - l}개 층)</div>` : ''}
+    ${mod('final', '최종 RMSNorm')}
+    ${side(fixed(`LM head (임베딩 공유) <i>${emb.shape[0]}→${emb.shape[1]}</i>`, 'wide'), fixed('30·tanh(x/30)'), fixed('Softmax'))}
+    ${fixed(`다음 토큰 확률 <span class="top5" id="dgTop"></span>`)}
+  </div>`;
+}
+
+// Residual connections: from a point on the stream, around the sublayer, into its ⊕ module.
+// Measured after fitDiagram() (zoom can change label wrapping), converted back to the layer's local CSS px.
+function placeSkips() {
+  const lay = $('#detail .layer');
+  if (!lay) return;
+  lay.querySelectorAll('.skip').forEach(e => e.remove());
+  const z = parseFloat($('#detail .dg').style.zoom) || 1;
+  const top = lay.getBoundingClientRect().top + parseFloat(getComputedStyle(lay).borderTopWidth) * z;
+  const mid = k => { const r = lay.querySelector(`[data-k="${k}"]`).getBoundingClientRect(); return (r.top + r.height / 2 - top) / z; };
+  for (const [a, b] of [['hin', 'attn_out'], ['attn_out', 'pe_in'], ['pe_in', 'resid_ple']])
+    lay.insertAdjacentHTML('beforeend', `<i class="skip" style="top:${mid(a)}px;height:${mid(b) - mid(a)}px"></i>`);
+}
+
+// Shrink the diagram to the column height so the whole model is visible without scrolling.
+// zoom (not transform) re-lays out at the smaller size, so text is rendered sharp instead of scaled as a bitmap.
+function fitDiagram() {
+  const sc = $('#detail .scroll'), dg = $('#detail .dg');
+  if (!dg) return;
+  dg.style.zoom = '';
+  if ($('#detail details').open) return;  // the op table is open: let it scroll
+  const h = dg.offsetHeight, s = Math.min(1, (sc.clientHeight - (sc.scrollHeight - h) - 4) / h);  // 4px slack for sub-pixel rounding
+  if (s < 1) dg.style.zoom = s;
+}
+const layoutDiagram = () => { fitDiagram(); placeSkips(); };
+addEventListener('resize', layoutDiagram);
+
+function draw() {
+  requestAnimationFrame(draw);
+  if (!dirty || !raw || !S) return;
+  dirty = false;
+  if (!F || F.raw !== raw) F = {...decodeFrame(raw), raw};
+  const maxN = Math.max(...F.resid.map(r => r ? r.n : 0));
+  document.querySelectorAll('#ov .row:not(.stage)').forEach(r => {
+    const i = +r.dataset.s, m = F.mlp[i], a = F.attn[i], re = F.resid[i];
+    if (m) paint(r.querySelector('.strip'), binMax(m.q, 128), 128, 1);
+    if (a) { const mx = Math.max(...a); paint(r.querySelector('.heads'), a.map(v => Math.round(v / mx * 255)), a.length, 1); }
+    if (re) r.querySelector('.bar i').style.width = `${re.n / maxN * 100}%`;
+  });
+  const l = Number(sel), dg = $('#detail .dg');
+  if (!dg) return;
+  const src = {...(F.detail.layer === l ? F.detail.v : {}), hin: l ? F.resid[l - 1] : F.emb, geglu: F.mlp[l], l_out: F.resid[l], emb: F.emb, final: F.final};
+  dg.querySelectorAll('.m[data-k]').forEach(el => {
+    const d = src[el.dataset.k];
+    if (!d) { el.querySelector('.mv').textContent = '다음 토큰부터'; return; }  // the server captures a newly selected layer from the next decode
+    const rows = +el.dataset.rows, per = d.q.length / rows, w = Math.min(per, 256), img = new Uint8Array(w * rows);
+    for (let r = 0; r < rows; r++) img.set(binMax(d.q.subarray(r * per, (r + 1) * per), w), r * w);
+    paint(el.querySelector('canvas'), img, w, rows);
+    el.querySelector('.mv').textContent = `‖x‖ ${d.n.toFixed(1)}`;
+  });
+  if (zoom.key) paintZoom(src[zoom.key]);
+  $('#dgIn').textContent = JSON.stringify(inTok);
+  $('#dgTop').innerHTML = raw.top.map(([t, p]) => `<span><code>${esc(JSON.stringify(t))}</code> ${(p * 100).toFixed(1)}%</span>`).join('');
+}
+requestAnimationFrame(draw);
+
+// The overlays (zoom, neuron view) cover only the structure columns, so the chat column stays usable;
+// in the one-column layout the chat is not beside them and they cover everything.
+function dockOverlays() {
+  const c = $('#msgs').closest('section').getBoundingClientRect();
+  document.documentElement.style.setProperty('--chat-w', c.left > innerWidth / 2 ? `${innerWidth - c.left}px` : '0px');
+}
+addEventListener('resize', dockOverlays);
+
+// Enlarged view of one module: every value gets its own cell, repainted with each new frame while open.
+const zoom = {key: null, rows: 1, d: null, g: null, hover: -1};
+function openZoom(el) {
+  dockOverlays();
+  Object.assign(zoom, {key: el.dataset.k, rows: +el.dataset.rows, d: null, g: null, hover: -1});
+  $('#zt').textContent = el.querySelector('.ml').title;
+  $('#zm').textContent = '값 없음 (대화를 시작하면 채워집니다)';
+  $('#zc').classList.toggle('nz', !!NEURON_KIND[zoom.key]);
+  $('#zr').textContent = NEURON_KIND[zoom.key]
+    ? '칸에 마우스를 올리면 그 값이 보이고, 누르면 그 뉴런을 해석합니다.' : '칸에 마우스를 올리면 그 값이 보입니다.';
+  $('#zoom').hidden = false;
+  dirty = true;
+}
+function closeZoom() { zoom.key = null; $('#zoom').hidden = true; }
+function paintZoom(d) {
+  if (!d) { $('#zm').textContent = '값 없음 (다음 토큰부터)'; return; }
+  const n = d.q.length;
+  // per-head modules (Q, attention output) keep one row per head; everything else wraps every 256 values
+  const g = zoom.rows === S.summary.n_head ? {rows: zoom.rows, cols: n / zoom.rows, heads: true} : {rows: Math.ceil(n / 256), cols: Math.min(n, 256), heads: false};
+  paint($('#zc'), d.q, g.cols, g.rows);
+  $('#zc').style.height = `${g.rows * Math.max(6, Math.min(24, Math.floor(420 / g.rows)))}px`;
+  $('#zm').textContent = `값 ${n}개 · ${g.rows} × ${g.cols}${g.heads ? ' (행 = 헤드)' : ''} · ‖x‖ ${d.n.toFixed(2)} · 최대 |a| ${d.s.toFixed(3)}`;
+  Object.assign(zoom, {d, g});
+  if (zoom.hover >= 0) showHover();
+}
+function showHover() {
+  const {d, g, hover: i} = zoom;
+  // values arrive as 8-bit magnitudes relative to the max: anything under half a step reads 0
+  const v = d.q[i] ? `≈ ${(d.q[i] / 255 * d.s).toFixed(4)}` : `< ${(d.s / 510).toFixed(4)}`;
+  $('#zr').textContent = `${g.heads ? `헤드 ${Math.floor(i / g.cols)} · 차원 ${i % g.cols}` : `뉴런 #${i}`} · |a| ${v}`;
+}
+$('#zc').onmousemove = e => {
+  if (!zoom.g) return;
+  const {rows, cols} = zoom.g, cv = e.target;
+  zoom.hover = Math.min(rows - 1, Math.floor(e.offsetY / cv.clientHeight * rows)) * cols + Math.min(cols - 1, Math.floor(e.offsetX / cv.clientWidth * cols));
+  showHover();
+};
+$('#detail').addEventListener('click', e => { const m = e.target.closest('.m[data-k]'); if (m) openZoom(m); });
+$('#zx').onclick = closeZoom;
+$('#zoom').onclick = e => { if (e.target.id === 'zoom') closeZoom(); };
+addEventListener('keydown', e => { if (e.key === 'Escape') { closeZoom(); closeNeuron(); } });
+// in an MLP module (gate, up, GELU(gate)×up) a cell is MLP neuron i of this layer; in a PLE module, PLE neuron i
+const NEURON_KIND = {geglu: 'mlp', ffn_gate: 'mlp', ffn_up: 'mlp', ple_gelu: 'ple', ple_in: 'ple', ple_mul: 'ple'};
+$('#zc').onclick = () => {
+  const kind = NEURON_KIND[zoom.key], l = Number(sel), i = zoom.hover;
+  if (!kind || i < 0) return;
+  closeZoom();
+  openNeuron(kind, l, i);
+};
+
+// Single-neuron interpretation, after Goodfire's "Neural Networks Are Already Clean": strongest firings of each pole
+// on one raw scale (corpus: Korean and English Wikipedia articles), what the output weight pushes, and ablation / steering.
+// Neurons: MLP (GELU(gate)×up, read by ffn_down) and PLE (GELU(inp_gate)×per-layer embedding, read by proj).
+const nv = {kind: null, l: null, i: null};
+function openNeuron(kind, l, i) {
+  const width = L => kind === 'mlp' ? L.n_ff : L.n_ple;
+  if (!S.layers[l] || !(i >= 0 && i < width(S.layers[l]))) { $('#ns').textContent = `층 0–${S.layers.length - 1}, 뉴런 0–${width(S.layers[l] || S.layers[0]) - 1} 범위로 입력하세요.`; return; }
+  dockOverlays();
+  Object.assign(nv, {kind, l, i});
+  $('#nkind').value = kind; $('#nl').value = l; $('#ni').value = i;
+  $('#nt').textContent = kind === 'mlp' ? `MLP 뉴런 L${pad(l)} #${i} · 활성 = GELU(gate)×up` : `PLE 뉴런 L${pad(l)} #${i} · 활성 = GELU(inp_gate)×층별 임베딩`;
+  $('#ns').textContent = '분석 중… (처음 한 번은 출력층 준비로 15초 정도 걸립니다)';
+  for (const s of ['#npos', '#nneg', '#nup', '#ndown', '#nres']) $(s).innerHTML = '';
+  $('#neuron').hidden = false;
+  ws.send(JSON.stringify({type: 'neuron', kind, layer: l, index: i}));
+}
+function closeNeuron() { $('#neuron').hidden = true; }
+const vis = p => p.replace(/\n/g, '⏎');
+function showNeuron(m) {
+  if (m.kind !== nv.kind || m.layer !== nv.l || m.index !== nv.i) return;  // an older request
+  const st = m.stats, c = m.corpus, part = c.done < c.total ? ` (색인 중 ${c.done}/${c.total} 문서)` : '';
+  if (!st) $('#ns').textContent = c.error ? `말뭉치 오류: ${c.error}` : c.total ? '말뭉치를 색인하는 중입니다. 첫 문서가 끝나면 다시 열어 주세요.' : '말뭉치를 준비하는 중입니다.';
+  else {
+    $('#ns').textContent = `말뭉치: 위키백과 한·영 ${c.done}문서 ${st.count.toLocaleString()}토큰${part} · 최대 ${st.max.toFixed(3)} · 최소 ${st.min.toFixed(3)} · 평균 ${st.mean.toFixed(3)} · 표준편차 ${st.std.toFixed(3)}`;
+    const scale = Math.max(Math.abs(st.max), Math.abs(st.min)) || 1;  // one raw scale per neuron, no percentiles
+    for (const [box, pole, cls] of [['#npos', st.poles[0], 'pos'], ['#nneg', st.poles[1], 'neg']])
+      $(box).innerHTML = pole.slice(0, 12).map(e => `<div class="ex"><span class="bv"><i class="${cls}" style="width:${Math.abs(e.v) / scale * 100}%"></i><b>${e.v.toFixed(3)}</b></span>` +
+        `<span class="ctx"><a class="dt" href="${esc(e.url)}" target="_blank" rel="noreferrer">${esc(e.doc)}</a>` +
+        `${e.ctx.map(([p, peak]) => peak ? `<mark class="${cls}">${esc(vis(p))}</mark>` : esc(vis(p))).join('')}</span></div>`).join('') || '<div class="w">없음</div>';
+  }
+  const tokens = (list, cls) => list.map(([p, s]) => `<span class="tk ${cls}"><code>${esc(JSON.stringify(p))}</code> ${s.toFixed(2)}</span>`).join('');
+  $('#nup').innerHTML = tokens(m.push.up, 'pos');
+  $('#ndown').innerHTML = tokens(m.push.down, 'neg');
+}
+const nreq = type => ({type, kind: nv.kind, layer: nv.l, index: nv.i, mode: $('#nmode').value, k: +$('#nk').value});
+$('#nprobe').onclick = () => {
+  $('#nres').innerHTML = '<div class="w">계산 중…</div>';
+  ws.send(JSON.stringify(nreq('nprobe')));
+};
+$('#nsteer').onclick = () => {
+  const u = history.map(m => m.role).lastIndexOf('user');
+  if (u < 0) { $('#nres').innerHTML = '<div class="w">대화가 있어야 비교할 수 있습니다.</div>'; return; }
+  $('#nres').innerHTML = '<div class="w">원래와 개입 후를 각각 생성하는 중… (수십 초)</div>';
+  ws.send(JSON.stringify({...nreq('nsteer'), messages: history.slice(0, u + 1)}));
+};
+function showProbe(m) {
+  const pct = p => `${(p * 100).toFixed(2)}%`;
+  $('#nres').innerHTML = `<h3>입력 토큰 <code>${esc(JSON.stringify(m.input))}</code> 다음 토큰 확률</h3>` +
+    `<table><tr><th>토큰</th><th>원래</th><th>개입 후</th><th>변화</th></tr>${m.rows.map(([t, a, b]) =>
+      `<tr><td><code>${esc(JSON.stringify(t))}</code></td><td>${pct(a)}</td><td>${pct(b)}</td><td style="color:var(--${b >= a ? 'pos' : 'neg'})">${b >= a ? '+' : ''}${((b - a) * 100).toFixed(2)}%p</td></tr>`).join('')}</table>`;
+}
+function showSteer(m) {
+  $('#nres').innerHTML = `<div class="ncols"><div><h3>원래 (탐욕적 생성)</h3><div class="gen">${esc(m.base)}</div></div>` +
+    `<div><h3>개입 후</h3><div class="gen">${esc(m.alt)}</div></div></div>`;
+}
+$('#ngo').onclick = () => openNeuron($('#nkind').value, +$('#nl').value, +$('#ni').value);
+$('#nx').onclick = closeNeuron;
+$('#neuron').onclick = e => { if (e.target.id === 'neuron') closeNeuron(); };
+
+function showCand(top, piece) {
+  $('#cand').innerHTML = (piece !== null ? `<div class="w">생성된 토큰: <code>${esc(JSON.stringify(piece))}</code> · 이 토큰을 고른 순간의 후보</div>` : `<div class="w">프롬프트 처리 직후 첫 토큰 후보</div>`) +
+    top.map(([t, p]) => `<div class="cr"><code>${esc(JSON.stringify(t))}</code><span class="bar"><i style="width:${p * 100}%"></i></span><span>${(p * 100).toFixed(1)}%</span></div>`).join('');
+}
+
+function addMsg(role, text) {
+  const div = document.createElement('div');
+  div.className = 'msg'; div.innerHTML = `<b>${role === 'user' ? '나' : 'Gemma'}</b><span></span>`;
+  div.lastChild.textContent = text; $('#msgs').append(div); $('#msgs').scrollTop = 1e9;
+  return div.lastChild;
+}
+function setBusy(b) { busy = b; $('#send').disabled = b || indexing; $('#stop').disabled = !b; $('#clear').disabled = b; }
+function showCorpus(c) {
+  indexing = !c.error && (c.total === null || c.done < c.total);
+  $('#corpus').textContent = c.error ? '말뭉치 준비 실패 · 뉴런 패널에 오류 표시' : c.total === null ? '말뭉치 준비 중…'
+    : indexing ? `말뭉치 색인 중 ${c.done}/${c.total} 문서 · 끝나면 대화 가능` : `말뭉치 위키백과 한·영 ${c.total}문서 · ${c.tokens.toLocaleString()}토큰`;
+  setBusy(busy);
+}
+
+$('#f').onsubmit = e => {
+  e.preventDefault();
+  const text = $('#inp').value.trim();
+  if (!text || busy || indexing || !S) return;
+  $('#inp').value = '';
+  history.push({role: 'user', content: text}); addMsg('user', text);
+  cur = {text: '', el: addMsg('assistant', '')}; nTok = 0; setBusy(true);
+  ws.send(JSON.stringify({type: 'chat', messages: history}));
+};
+$('#inp').onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('#f').requestSubmit(); } };
+$('#stop').onclick = () => ws.send(JSON.stringify({type: 'stop'}));
+$('#clear').onclick = () => { history = []; $('#msgs').innerHTML = ''; };
+</script>
+</body>
+</html>
