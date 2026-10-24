@@ -27,3 +27,7 @@ python server.py
 
 - Hugging Face `google/gemma-4-E2B-it-qat-q4_0-gguf`에서 모델(약 3.4 GB)을 받습니다. Gemma 라이선스 동의와 `huggingface-cli login`이 필요할 수 있습니다.
 - `wikimedia/wikipedia`(2023-11-01 한국어·영어)에서 문서 160개의 앞부분을 받아, 모든 MLP·PLE 뉴런의 발화를 한 번 색인합니다. 노트북 CPU에서 약 7~8분 걸리며, 그동안 대화는 기다립니다. 결과는 `cache/`에 저장되어 다음 실행부터 바로 불러옵니다.
+
+## 라이선스
+
+이 저장소의 코드는 [MIT 라이선스](LICENSE)를 따릅니다. 모델 가중치는 포함하지 않으며 Gemma 이용 약관을 따르고, 위키백과 본문은 CC BY-SA 4.0입니다.
