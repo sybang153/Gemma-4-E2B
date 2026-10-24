@@ -150,7 +150,7 @@ details{margin-top:12px}summary{cursor:pointer;color:var(--muted)}
 <div id="boot" hidden><div class="zp bp">
   <b>Gemma 4 E2B를 이 브라우저에서 실행합니다</b>
   <p class="w">WebGPU로 모델(QAT Q4_0 GGUF, 3.35 GB)을 브라우저 안에서 직접 돌립니다. 처음 한 번 Hugging Face에서 받아 브라우저 저장소에 보관하고, 다음부터는 바로 불러옵니다. 데스크톱 Chrome·Edge와 넉넉한 GPU 메모리(2 GB 이상)를 권장합니다.</p>
-  <div class="btns" id="bbtn"><button type="button" class="pri" id="bdl">모델 받기 (3.35 GB)</button><label class="fbtn">가진 GGUF 파일 선택<input type="file" id="bfile" accept=".gguf" hidden></label></div>
+  <div class="btns" id="bbtn"><button type="button" class="pri" id="bdl" disabled>모델 받기 (3.35 GB)</button><label class="fbtn">가진 GGUF 파일 선택<input type="file" id="bfile" accept=".gguf" hidden></label></div>
   <div class="bar"><i id="bbar"></i></div>
   <div id="bstat" class="w">WebGPU 확인 중…</div>
 </div></div>
@@ -244,31 +244,38 @@ async function boot(link) {
   const W = await import('./web.js');
   const start = async blob => {
     $('#bbtn').hidden = true; bar(0);
-    stat(blob instanceof W.HttpBlob ? '브라우저 저장 공간이 부족해, 모델을 저장하지 않고 필요한 부분만 받아 GPU에 올리는 중… (약 1.4 GB, 방문할 때마다)'
-      : '모델을 GPU에 올리는 중… (수십 초)');
+    stat(blob instanceof W.HttpBlob ? '저장 공간이 부족해 모델을 저장하지 않고 필요한 부분만 받아 실행합니다 (방문할 때마다 약 1.4 GB, 생성이 느립니다)…'
+      : blob instanceof W.SplitBlob ? 'GPU 가중치(약 1.4 GB)를 받아 올리는 중… (저장 공간이 부족해 방문할 때마다 받습니다)' : '모델을 GPU에 올리는 중… (수십 초)');
     const s = new W.Session(m => link.onmessage({data: m}));
     try {
       await s.boot(blob, bar);
       link.session = s; $('#boot').hidden = true;
     } catch (e) { $('#bbtn').hidden = false; stat(`오류: ${e.message}`); }
   };
-  const stored = await W.storedModel();
+  const url = new URLSearchParams(location.search).get('model') || W.MODEL_URL;
+  const stored = await W.storedModel(), ple = stored ? null : await W.storedPLE();
   if (stored) return start(stored);
+  if (ple) return start(new W.SplitBlob(new W.HttpBlob(url, W.MODEL_SIZE), ple));
   stat('');
+  const fetchTo = (get, size, what) => {
+    const t0 = performance.now();
+    return get(url, p => {
+      bar(p);
+      const s = (performance.now() - t0) / 1000, mb = p * size / 2 ** 20;
+      stat(`${what} 받는 중… ${mb.toFixed(0)} / ${(size / 2 ** 20).toFixed(0)} MB · ${(mb / s).toFixed(1)} MB/s`);
+    });
+  };
   $('#bdl').onclick = async () => {
     $('#bbtn').hidden = true;
-    const url = new URLSearchParams(location.search).get('model') || W.MODEL_URL;
-    if (!(await W.hasRoom())) return start(new W.HttpBlob(url, W.MODEL_SIZE));  // no room to keep it: read it remotely
     try {
-      const t0 = performance.now();
-      const f = await W.downloadModel(url, p => {
-        bar(p);
-        const s = (performance.now() - t0) / 1000, mb = p * W.MODEL_SIZE / 2 ** 20;
-        stat(`모델 받는 중… ${mb.toFixed(0)} / ${(W.MODEL_SIZE / 2 ** 20).toFixed(0)} MB · ${(mb / s).toFixed(1)} MB/s`);
-      });
-      start(f);
+      if (await W.hasRoom(W.MODEL_SIZE)) return start(await fetchTo(W.downloadModel, W.MODEL_SIZE, '모델'));
+      // not enough room for the whole file: keep only the per-layer embedding table (read every token), stream the rest
+      const remote = new W.HttpBlob(url, W.MODEL_SIZE);
+      if (await W.hasRoom(W.PLE.size)) return start(new W.SplitBlob(remote, await fetchTo(W.downloadPLE, W.PLE.size, '저장 공간이 부족해 층별 임베딩 표만 저장합니다. 표')));
+      start(remote);
     } catch (e) { $('#bbtn').hidden = false; stat(`오류: ${e.message}`); }
   };
+  $('#bdl').disabled = false;
   $('#bfile').onchange = e => { if (e.target.files[0]) start(e.target.files[0]); };
 }
 

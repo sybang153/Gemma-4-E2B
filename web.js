@@ -3,16 +3,28 @@ import {readGGUF, Tokenizer, Model, chatPrompt, N_CTX, f16} from './engine.js';
 
 export const MODEL_URL = 'https://huggingface.co/google/gemma-4-E2B-it-qat-q4_0-gguf/resolve/main/gemma-4-E2B_q4_0-it.gguf';
 export const MODEL_SIZE = 3349516256;
-const MODEL_NAME = 'gemma-4-E2B_q4_0-it.gguf';
+// the per-layer token embedding table inside it (read a row per token, so it should be local)
+export const PLE = {offset: 43347840, size: 1926758400};
+const MODEL_NAME = 'gemma-4-E2B_q4_0-it.gguf', PLE_NAME = 'gemma-4-E2B_q4_0-it.per_layer_token_embd';
 const SPECIAL_RE = /^<[^<>]*>$/;  // control / unused vocabulary entries, skipped in token lists
 
-// The GGUF kept in the origin-private file system, or null.
-export async function storedModel() {
+async function opfsFile(name, size) {
   try {
     const root = await navigator.storage.getDirectory();
-    const f = await (await root.getFileHandle(MODEL_NAME)).getFile();
-    return f.size === MODEL_SIZE ? f : null;
+    const f = await (await root.getFileHandle(name)).getFile();
+    return f.size === size ? f : null;
   } catch { return null; }
+}
+// What is kept in the origin-private file system: the whole GGUF, or only its per-layer embedding table.
+export const storedModel = () => opfsFile(MODEL_NAME, MODEL_SIZE);
+export const storedPLE = () => opfsFile(PLE_NAME, PLE.size);
+
+// The GGUF with its per-layer embedding table read from a local copy and everything else from `remote`.
+export class SplitBlob {
+  constructor(remote, ple) { this.remote = remote; this.ple = ple; this.size = remote.size; }
+  slice(a, b) {
+    return a >= PLE.offset && b <= PLE.offset + PLE.size ? this.ple.slice(a - PLE.offset, b - PLE.offset) : this.remote.slice(a, b);
+  }
 }
 
 // A remote file read through HTTP Range requests, in place of a stored copy. After the first request the redirect
@@ -33,17 +45,17 @@ export class HttpBlob {
   }
 }
 
-export async function hasRoom() {
+export async function hasRoom(bytes) {
   const {quota = 0, usage = 0} = await navigator.storage.estimate();
-  return quota - usage >= MODEL_SIZE * 1.05;
+  return quota - usage >= bytes * 1.05;
 }
 
-// Download the GGUF into the origin-private file system (once), reporting progress 0..1.
-export async function downloadModel(url, onProgress) {
+// Download (a byte range of) the GGUF into the origin-private file system, reporting progress 0..1.
+async function download(url, name, size, onProgress, from = null) {
   await navigator.storage.persist?.();
   const root = await navigator.storage.getDirectory();
-  const fh = await root.getFileHandle(MODEL_NAME, {create: true});
-  const res = await fetch(url);
+  const fh = await root.getFileHandle(name, {create: true});
+  const res = await fetch(url, from === null ? {} : {headers: {Range: `bytes=${from}-${from + size - 1}`}});
   if (!res.ok) throw new Error(`모델을 받지 못했습니다 (HTTP ${res.status}).`);
   const w = await fh.createWritable(), reader = res.body.getReader();
   let got = 0;
@@ -52,13 +64,15 @@ export async function downloadModel(url, onProgress) {
     if (done) break;
     await w.write(value);
     got += value.length;
-    onProgress(got / MODEL_SIZE);
+    onProgress(got / size);
   }
   await w.close();
   const f = await fh.getFile();
-  if (f.size !== MODEL_SIZE) throw new Error('받은 모델 파일의 크기가 다릅니다. 다시 시도해 주세요.');
+  if (f.size !== size) throw new Error('받은 파일의 크기가 다릅니다. 다시 시도해 주세요.');
   return f;
 }
+export const downloadModel = (url, onProgress) => download(url, MODEL_NAME, MODEL_SIZE, onProgress);
+export const downloadPLE = (url, onProgress) => download(url, PLE_NAME, PLE.size, onProgress, PLE.offset);
 
 // magnitudes scaled to 0..255 by the max (s), mean |v| (m) and norm (n), as server.py's payload
 function vec(v) {
@@ -107,6 +121,7 @@ export class Session {
     if (blob.size !== MODEL_SIZE) throw new Error(`${MODEL_NAME}(${MODEL_SIZE.toLocaleString()} 바이트, google/gemma-4-E2B-it-qat-q4_0-gguf)만 지원합니다.`);
     const [g, struct, corpus, tokens] = await Promise.all([readGGUF(blob), fetch('data/structure.json').then(r => r.json()),
       fetch('data/corpus.json').then(r => r.json()), fetch('data/corpus.bin').then(r => r.arrayBuffer())]);
+    if (g.tensors['per_layer_token_embd.weight'].offset !== PLE.offset) throw new Error('예상과 다른 GGUF 구성입니다.');
     this.tok = new Tokenizer(g.meta);
     this.meta = g.meta;
     this.m = await Model.load(blob, g, onProgress);
