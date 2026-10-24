@@ -15,13 +15,19 @@ export async function storedModel() {
   } catch { return null; }
 }
 
-// A remote file read through HTTP Range requests, in place of a stored copy.
+// A remote file read through HTTP Range requests, in place of a stored copy. After the first request the redirect
+// target (the CDN URL) is used directly, saving a round trip per read; the original URL again if that fails.
 export class HttpBlob {
-  constructor(url, size) { this.url = url; this.size = size; }
+  constructor(url, size) { this.url = url; this.size = size; this.direct = null; }
   slice(a, b) {
+    const range = {headers: {Range: `bytes=${a}-${b - 1}`}};
     return {arrayBuffer: async () => {
-      const r = await fetch(this.url, {headers: {Range: `bytes=${a}-${b - 1}`}});
-      if (r.status !== 206) throw new Error(`부분 다운로드 실패 (HTTP ${r.status})`);
+      let r = this.direct ? await fetch(this.direct, range).catch(() => null) : null;
+      if (!r || r.status !== 206) {
+        r = await fetch(this.url, range);
+        if (r.status !== 206) throw new Error(`부분 다운로드 실패 (HTTP ${r.status})`);
+        this.direct = r.url;
+      }
       return r.arrayBuffer();
     }};
   }

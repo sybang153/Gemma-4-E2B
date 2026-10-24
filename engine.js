@@ -499,7 +499,7 @@ export class Model {
   }
 
   constructor(device, blob, g) {
-    this.device = device; this.blob = blob; this.g = g;
+    this.device = device; this.blob = blob; this.g = g; this.pre = new Map();
     const meta = g.meta, a = 'gemma4.';
     this.nLayer = meta[a + 'block_count']; this.nEmbd = meta[a + 'embedding_length']; this.nHead = meta[a + 'attention.head_count'];
     this.nFF = meta[a + 'feed_forward_length']; this.nPL = meta[a + 'embedding_length_per_layer_input'];
@@ -515,7 +515,18 @@ export class Model {
 
   async read(name) {
     const t = this.g.tensors[name], n = t.ne.reduce((x, y) => x * y, 1);
-    return {t, n, u8: new Uint8Array(await this.blob.slice(t.offset, t.offset + BYTES[t.type](n)).arrayBuffer())};
+    const u8 = this.pre.has(name) ? await this.pre.get(name) : new Uint8Array(await this.blob.slice(t.offset, t.offset + BYTES[t.type](n)).arrayBuffer());
+    this.pre.delete(name);
+    return {t, n, u8};
+  }
+
+  // Start reading tensors that lie next to each other in the file (one layer) with a single request.
+  prefetchSpan(names) {
+    const ts = names.map(n => this.g.tensors[n]).filter(Boolean), size = t => BYTES[t.type](t.ne.reduce((x, y) => x * y, 1));
+    const a = Math.min(...ts.map(t => t.offset)), b = Math.max(...ts.map(t => t.offset + size(t)));
+    if (b - a > 1.01 * ts.reduce((s, t) => s + size(t), 0)) return;  // not contiguous: read one by one
+    const buf = this.blob.slice(a, b).arrayBuffer();
+    for (const t of ts) this.pre.set(t.name, buf.then(ab => new Uint8Array(ab, t.offset - a, size(t))));
   }
 
   buffer(data, usage = GPUBufferUsage.STORAGE) {
@@ -571,7 +582,10 @@ export class Model {
     this.ropeFreqs = glob['rope_freqs.weight'].buf;
     this.ones = this.buffer(new Float32Array(512).fill(1));
     this.layers = [];
+    const layerNames = l => names.filter(n => n.startsWith(`blk.${l}.`));
+    this.prefetchSpan(layerNames(0)); this.prefetchSpan(layerNames(1));
     for (let l = 0; l < L; l++) {
+      if (l + 2 < L) this.prefetchSpan(layerNames(l + 2));  // keep two layers in flight
       const w = {}, p = `blk.${l}.`;
       for (const k of ['attn_q', 'attn_k', 'attn_v', 'attn_output', 'ffn_gate', 'ffn_up', 'ffn_down', 'inp_gate', 'proj']) {
         if (this.g.tensors[p + k + '.weight']) { w[k] = await this.q4(p + k + '.weight'); tick(p + k + '.weight'); }
