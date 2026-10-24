@@ -55,6 +55,10 @@ h2{font-size:13px;margin:0 0 6px}
 @media (prefers-color-scheme:dark){:root{--pos:#3fb8ba;--neg:#e0845a}}
 #neuron{position:fixed;inset:0;right:var(--chat-w,0px);z-index:11;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45)}
 #neuron[hidden]{display:none}
+#boot{position:fixed;inset:0;z-index:12;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45)}
+#boot[hidden]{display:none}
+.bp{width:min(560px,calc(100% - 24px))}.bp p{margin:8px 0 12px}.bp .bar{margin:12px 0 6px}
+.fbtn{font:inherit;padding:5px 12px;border-radius:6px;border:1px solid var(--line);background:var(--panel);cursor:pointer}
 .np{width:min(1000px,calc(100% - 24px))}.np h3{font-size:12px;margin:12px 0 4px}.np h3 .w{font-weight:400}
 .np input{width:64px;font:inherit;padding:2px 4px;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:4px}
 .np select{font:inherit;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:4px}
@@ -143,6 +147,13 @@ details{margin-top:12px}summary{cursor:pointer;color:var(--muted)}
   <canvas id="zc"></canvas>
   <div id="zr" class="w"></div>
 </div></div>
+<div id="boot" hidden><div class="zp bp">
+  <b>Gemma 4 E2B를 이 브라우저에서 실행합니다</b>
+  <p class="w">WebGPU로 모델(QAT Q4_0 GGUF, 3.35 GB)을 브라우저 안에서 직접 돌립니다. 처음 한 번 Hugging Face에서 받아 브라우저 저장소에 보관하고, 다음부터는 바로 불러옵니다. 데스크톱 Chrome·Edge와 넉넉한 GPU 메모리(2 GB 이상)를 권장합니다.</p>
+  <div class="btns" id="bbtn"><button type="button" class="pri" id="bdl">모델 받기 (3.35 GB)</button><label class="fbtn">가진 GGUF 파일 선택<input type="file" id="bfile" accept=".gguf" hidden></label></div>
+  <div class="bar"><i id="bbar"></i></div>
+  <div id="bstat" class="w">WebGPU 확인 중…</div>
+</div></div>
 <div id="neuron" hidden><div class="zp np">
   <div class="zh"><b id="nt"></b>
     <select id="nkind"><option value="mlp">MLP</option><option value="ple">PLE</option></select>
@@ -196,10 +207,11 @@ function binMax(q, w) {  // downsample to w bins, keeping the strongest neuron p
   return out;
 }
 
-const ws = new WebSocket(`ws://${location.host}/ws`);
+// Served by server.py (port 8800): its WebSocket. Anywhere else (e.g. GitHub Pages): the model runs in this browser (web.js).
+const ws = location.port === '8800' ? new WebSocket(`ws://${location.host}/ws`) : browserLink();
 ws.onclose = () => { $('#sum').textContent = '서버 연결 끊김'; };
 ws.onmessage = e => {
-  const m = JSON.parse(e.data);
+  const m = typeof e.data === 'string' ? JSON.parse(e.data) : e.data;
   if (m.type === 'structure') { S = m; buildHeader(); buildOverview(); select(0); }
   else if (m.type === 'tok') {
     if (!cur.text && !nTok) t0 = performance.now();
@@ -217,10 +229,54 @@ ws.onmessage = e => {
   else if (m.type === 'error') { (cur ? cur.el : $('#msgs')).insertAdjacentHTML('beforeend', `<div class="w">오류: ${esc(m.message)}</div>`); setBusy(false); }
 };
 
+function browserLink() {
+  const link = {onmessage: null, onclose: null, session: null, send(s) { this.session?.handle(JSON.parse(s)); }};
+  boot(link).catch(e => { $('#bstat').textContent = `오류: ${e.message}`; });
+  return link;
+}
+async function boot(link) {
+  $('#boot').hidden = false;
+  const stat = s => { $('#bstat').textContent = s; }, bar = p => { $('#bbar').style.width = `${(p * 100).toFixed(1)}%`; };
+  if (!navigator.gpu || !(await navigator.gpu.requestAdapter())) {
+    $('#bbtn').hidden = true;
+    return stat('이 브라우저에서는 WebGPU를 쓸 수 없습니다. 데스크톱 Chrome·Edge 최신 버전을 쓰거나, server.py를 로컬에서 실행하세요.');
+  }
+  const W = await import('./web.js');
+  const start = async blob => {
+    $('#bbtn').hidden = true; bar(0);
+    stat(blob instanceof W.HttpBlob ? '브라우저 저장 공간이 부족해, 모델을 저장하지 않고 필요한 부분만 받아 GPU에 올리는 중… (약 1.4 GB, 방문할 때마다)'
+      : '모델을 GPU에 올리는 중… (수십 초)');
+    const s = new W.Session(m => link.onmessage({data: m}));
+    try {
+      await s.boot(blob, bar);
+      link.session = s; $('#boot').hidden = true;
+    } catch (e) { $('#bbtn').hidden = false; stat(`오류: ${e.message}`); }
+  };
+  const stored = await W.storedModel();
+  if (stored) return start(stored);
+  stat('');
+  $('#bdl').onclick = async () => {
+    $('#bbtn').hidden = true;
+    const url = new URLSearchParams(location.search).get('model') || W.MODEL_URL;
+    if (!(await W.hasRoom())) return start(new W.HttpBlob(url, W.MODEL_SIZE));  // no room to keep it: read it remotely
+    try {
+      const t0 = performance.now();
+      const f = await W.downloadModel(url, p => {
+        bar(p);
+        const s = (performance.now() - t0) / 1000, mb = p * W.MODEL_SIZE / 2 ** 20;
+        stat(`모델 받는 중… ${mb.toFixed(0)} / ${(W.MODEL_SIZE / 2 ** 20).toFixed(0)} MB · ${(mb / s).toFixed(1)} MB/s`);
+      });
+      start(f);
+    } catch (e) { $('#bbtn').hidden = false; stat(`오류: ${e.message}`); }
+  };
+  $('#bfile').onchange = e => { if (e.target.files[0]) start(e.target.files[0]); };
+}
+
 function decodeFrame(f) {
-  const vec = v => v && {q: b64(v.q), n: v.n, s: v.s};
+  const u8 = q => typeof q === 'string' ? b64(q) : q;  // base64 from server.py, bytes from web.js
+  const vec = v => v && {q: u8(v.q), n: v.n, s: v.s};
   return {
-    mlp: f.mlp.map(l => l && {q: b64(l.q), s: l.s, m: l.m, n: l.n}),
+    mlp: f.mlp.map(l => l && {q: u8(l.q), s: l.s, m: l.m, n: l.n}),
     attn: f.attn,
     resid: f.resid.map(vec),
     emb: vec(f.emb), final: vec(f.final),
